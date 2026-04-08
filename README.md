@@ -2,7 +2,11 @@
 > **Capstone Design Project** > 브라우저 기반의 실시간 딥페이크 탐지 시스템 (Chrome Extension, Spring Boot, FastAPI)
 
 # 현재 이파일을 그대로 크롬원격으로 실행시키려면 frontend file에 있는 파일을 밖으로 뺴내야 실행이 가능합니다. 확인부탁드립니다
-
+# 사용방법
+## Fork: 본 레포지토리를 개인 계정으로 Fork 합니다.
+## Clone: Fork한 레포지토리를 로컬 환경에 Clone 합니다.
+## Push: 완료된 코드를 본인의 Fork된 레포지토리에 Push 합니다.
+## PR: 원본 레포지토리로 **Pull Request(PR)**를 생성
 ---
 
 ## 🏗️ System Architecture
