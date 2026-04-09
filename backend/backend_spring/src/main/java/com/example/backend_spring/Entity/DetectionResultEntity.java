@@ -22,6 +22,10 @@ public class DetectionResultEntity {
     @Column(length = 1000)
     private String message;
 
+    @Lob
+    @Column(columnDefinition = "TEXT")
+    private String rawResultJson;
+
     private LocalDateTime createdAt;
 
     public DetectionResultEntity() {
@@ -98,6 +102,14 @@ public class DetectionResultEntity {
 
     public void setMessage(String summary) {
         this.message = summary;
+    }
+
+    public String getRawResultJson() {
+        return rawResultJson;
+    }
+
+    public void setRawResultJson(String rawResultJson) {
+        this.rawResultJson = rawResultJson;
     }
 
     public LocalDateTime getCreatedAt() {

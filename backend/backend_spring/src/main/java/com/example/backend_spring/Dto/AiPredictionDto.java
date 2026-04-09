@@ -1,5 +1,8 @@
 package com.example.backend_spring.Dto;
 
+import java.util.List;
+import java.util.Map;
+
 public class AiPredictionDto {
 
     private boolean isDeepfake;
@@ -9,6 +12,8 @@ public class AiPredictionDto {
     private String modelVersion;
     private long processingTimeMs;
     private String message;
+    private List<Map<String, Object>> faces;
+    private Map<String, String> debugImages;
 
     public boolean isDeepfake() {
         return isDeepfake;
@@ -64,5 +69,21 @@ public class AiPredictionDto {
 
     public void setMessage(String message) {
         this.message = message;
+    }
+
+    public List<Map<String, Object>> getFaces() {
+        return faces;
+    }
+
+    public void setFaces(List<Map<String, Object>> faces) {
+        this.faces = faces;
+    }
+
+    public Map<String, String> getDebugImages() {
+        return debugImages;
+    }
+
+    public void setDebugImages(Map<String, String> debugImages) {
+        this.debugImages = debugImages;
     }
 }

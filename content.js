@@ -30,21 +30,28 @@ function ensureWrapper(media) {
 
 function createButton(media) {
     const btn = document.createElement("button");
-    btn.innerText = "🔍 검사";
+    btn.innerText = "🔍";
     btn.className = "veritai-check-btn";
+    btn.title = "VeritAI 분석";
+    btn.setAttribute("aria-label", "VeritAI 분석");
     btn.style.cssText = `
         position: absolute;
         top: 10px;
         left: 10px;
         z-index: 2147483647;
-        padding: 6px 10px;
+        width: 38px;
+        height: 38px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0;
         background-color: #e74c3c;
         color: white;
         border: 2px solid white;
-        border-radius: 6px;
+        border-radius: 999px;
         cursor: pointer;
         font-weight: bold;
-        font-size: 13px;
+        font-size: 16px;
         box-shadow: 0 2px 5px rgba(0,0,0,0.3);
     `;
 
@@ -58,7 +65,7 @@ function createButton(media) {
         }
 
         isProcessing = true;
-        btn.innerText = "⏳ 처리 중";
+        btn.innerText = "⏳";
         btn.disabled = true;
 
         try {
@@ -66,10 +73,10 @@ function createButton(media) {
 
             if (media.tagName === "VIDEO") {
                 blob = await captureVideoBlob(media);
-                await sendToBackend(blob, "video_frame");
+                await sendToBackend(media, blob, "video_frame");
             } else if (media.tagName === "IMG") {
                 blob = await captureImageBlob(media.currentSrc || media.src);
-                await sendToBackend(blob, "image");
+                await sendToBackend(media, blob, "image");
             }
         } catch (error) {
             console.error("미디어 처리 오류:", error);
@@ -81,7 +88,7 @@ function createButton(media) {
                 alert(`오류: ${message}`);
             }
         } finally {
-            btn.innerText = "🔍 검사";
+            btn.innerText = "🔍";
             btn.disabled = false;
             isProcessing = false;
         }
@@ -235,7 +242,7 @@ async function captureImageBlob(url) {
     });
 }
 
-async function sendToBackend(blob, mediaType) {
+async function sendToBackend(media, blob, mediaType) {
     const formData = new FormData();
     formData.append("file", blob, "capture.jpg");
     formData.append("sourceUrl", window.location.href);
@@ -253,12 +260,30 @@ async function sendToBackend(blob, mediaType) {
     }
 
     const data = await response.json();
-    if (data.status !== "DONE") {
+    if (!data || data.status !== "DONE" || !data.result) {
         throw new Error(data.message || "분석이 정상 완료되지 않았습니다.");
     }
 
     const result = data.result;
-    const prob = (result.confidence * 100).toFixed(2);
+    const prob = ((result.confidence || 0) * 100).toFixed(2);
+    const faces = Array.isArray(result.faces) ? result.faces : [];
+
+    const faceSummary = faces.length
+        ? "\n\n" + faces.slice(0, 3).map((face, index) => {
+            const bbox = face?.bbox || {};
+            const quality = face?.quality || {};
+            const detectionConfidence = (face?.detectionConfidence ?? face?.score ?? 0) * 100;
+            const qualityScore = (quality?.score ?? 0) * 100;
+
+            return [
+                `[얼굴 ${index + 1}]`,
+                `위치: (${bbox.x ?? "?"}, ${bbox.y ?? "?"}, ${bbox.w ?? "?"}x${bbox.h ?? "?"})`,
+                `유형: ${face?.faceMode || "unknown"}`,
+                `검출 신뢰도: ${detectionConfidence.toFixed(1)}%`,
+                `품질: ${quality?.label || "unknown"} (${qualityScore.toFixed(1)}%)`
+            ].join("\n");
+        }).join("\n\n")
+        : "\n\n검출된 얼굴이 없습니다. 얼굴이 더 크게 보이는 정면 이미지로 다시 시도해보세요.";
 
     alert(
         `요청 ID: ${data.requestId}\n` +
@@ -268,7 +293,8 @@ async function sendToBackend(blob, mediaType) {
         `워터마크 탐지: ${result.watermarkDetected ? "예" : "아니오"}\n` +
         `모델 버전: ${result.modelVersion}\n` +
         `처리 시간: ${result.processingTimeMs}ms\n` +
-        `메시지: ${result.message}`
+        `메시지: ${result.message}` +
+        faceSummary
     );
 }
 
@@ -284,5 +310,10 @@ observer.observe(document.body, {
     attributes: true
 });
 
-window.addEventListener("scroll", attachButtons, { passive: true });
-window.addEventListener("resize", attachButtons);
+window.addEventListener("scroll", () => {
+    attachButtons();
+}, { passive: true });
+
+window.addEventListener("resize", () => {
+    attachButtons();
+});

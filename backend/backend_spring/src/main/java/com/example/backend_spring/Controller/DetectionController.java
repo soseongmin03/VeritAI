@@ -1,5 +1,6 @@
 package com.example.backend_spring.Controller;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.example.backend_spring.Dto.AiPredictionDto;
 import com.example.backend_spring.Dto.DetectionResponseDto;
 import com.example.backend_spring.Entity.DetectionRequestEntity;
@@ -18,7 +19,6 @@ import org.springframework.web.multipart.MultipartFile;
 import java.io.IOException;
 import java.nio.file.*;
 import java.security.MessageDigest;
-import java.time.LocalDateTime;
 import java.util.HexFormat;
 import java.util.Optional;
 import java.util.UUID;
@@ -31,6 +31,7 @@ public class DetectionController {
     private final RestTemplate restTemplate;
     private final DetectionRequestRepository detectionRequestRepository;
     private final DetectionResultRepository detectionResultRepository;
+    private final ObjectMapper objectMapper;
 
     @Value("${app.upload-dir}")
     private String uploadDir;
@@ -40,10 +41,12 @@ public class DetectionController {
 
     public DetectionController(RestTemplate restTemplate,
                                DetectionRequestRepository detectionRequestRepository,
-                               DetectionResultRepository detectionResultRepository) {
+                               DetectionResultRepository detectionResultRepository,
+                               ObjectMapper objectMapper) {
         this.restTemplate = restTemplate;
         this.detectionRequestRepository = detectionRequestRepository;
         this.detectionResultRepository = detectionResultRepository;
+        this.objectMapper = objectMapper;
     }
 
     @PostMapping("/detections")
@@ -92,6 +95,7 @@ public class DetectionController {
             resultEntity.setModelVersion(aiResult.getModelVersion());
             resultEntity.setProcessingTimeMs(aiResult.getProcessingTimeMs());
             resultEntity.setMessage(aiResult.getMessage());
+            resultEntity.setRawResultJson(objectMapper.writeValueAsString(aiResult));
             detectionResultRepository.save(resultEntity);
 
             requestEntity.setStatus("DONE");
@@ -136,14 +140,7 @@ public class DetectionController {
         AiPredictionDto resultDto = null;
         if (resultOpt.isPresent()) {
             DetectionResultEntity resultEntity = resultOpt.get();
-            resultDto = new AiPredictionDto();
-            resultDto.setDeepfake(resultEntity.isDeepfake());
-            resultDto.setConfidence(resultEntity.getConfidence());
-            resultDto.setFaceCount(resultEntity.getFaceCount());
-            resultDto.setWatermarkDetected(resultEntity.isWatermarkDetected());
-            resultDto.setModelVersion(resultEntity.getModelVersion());
-            resultDto.setProcessingTimeMs(resultEntity.getProcessingTimeMs());
-            resultDto.setMessage(resultEntity.getMessage());
+            resultDto = deserializeResult(resultEntity);
         }
 
         DetectionResponseDto responseDto = new DetectionResponseDto(
@@ -178,10 +175,31 @@ public class DetectionController {
 
         return response.getBody();
     }
-    private String truncate(String value, int maxLength) {
-    if (value == null) return null;
-    return value.length() <= maxLength ? value : value.substring(0, maxLength);
+
+    private AiPredictionDto deserializeResult(DetectionResultEntity resultEntity) {
+        if (resultEntity.getRawResultJson() != null && !resultEntity.getRawResultJson().isBlank()) {
+            try {
+                return objectMapper.readValue(resultEntity.getRawResultJson(), AiPredictionDto.class);
+            } catch (Exception ignored) {
+            }
+        }
+
+        AiPredictionDto resultDto = new AiPredictionDto();
+        resultDto.setDeepfake(resultEntity.isDeepfake());
+        resultDto.setConfidence(resultEntity.getConfidence());
+        resultDto.setFaceCount(resultEntity.getFaceCount());
+        resultDto.setWatermarkDetected(resultEntity.isWatermarkDetected());
+        resultDto.setModelVersion(resultEntity.getModelVersion());
+        resultDto.setProcessingTimeMs(resultEntity.getProcessingTimeMs());
+        resultDto.setMessage(resultEntity.getMessage());
+        return resultDto;
     }
+
+    private String truncate(String value, int maxLength) {
+        if (value == null) return null;
+        return value.length() <= maxLength ? value : value.substring(0, maxLength);
+    }
+
     private String sha256(byte[] bytes) throws Exception {
         MessageDigest md = MessageDigest.getInstance("SHA-256");
         byte[] digest = md.digest(bytes);
