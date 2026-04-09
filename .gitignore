@@ -1,4 +1,4 @@
-### 1. Common (공통) ###
+### Common ###
 .vscode/
 .idea/
 *.log
@@ -7,27 +7,37 @@ Thumbs.db
 .env
 .env.local
 
-### 2. Backend (Spring Boot / Java) ###
-backend-spring/build/
-backend-spring/.gradle/
-backend-spring/bin/
-backend-spring/out/
-backend-spring/.settings/
-backend-spring/.classpath
-backend-spring/.project
-# 만약 Maven을 쓴다면
-backend-spring/target/
+### Git / Build caches ###
+.gradle/
+**/.gradle/
+**/.gradle-home/
+**/build/
+**/out/
+**/bin/
+**/target/
+**/__pycache__/
+**/*.pyc
+**/.pytest_cache/
 
-### 3. AI Server (Python / FastAPI) ###
-ai-fastapi/venv/
-ai-fastapi/.venv/
-ai-fastapi/__pycache__/
-ai-fastapi/*.pyc
-ai-fastapi/.pytest_cache/
-ai-fastapi/dist/
-ai-fastapi/build/
+### Backend ###
+backend/backend_spring/.classpath
+backend/backend_spring/.project
+backend/backend_spring/.settings/
+backend/backend_spring/uploads/
 
-### 4. Frontend (Chrome Extension / JS / TS) ###
+### AI ###
+ai/venv/
+ai/debug/
+
+### Generated analysis artifacts ###
+images/analysis/
+images/faces/
+uploads/
+
+### Frontend / Extension ###
+frontend/node_modules/
+frontend/dist/
+frontend/.parcel-cache/
 extension/node_modules/
 extension/dist/
 extension/.parcel-cache/
