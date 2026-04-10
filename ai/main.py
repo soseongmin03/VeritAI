@@ -336,11 +336,19 @@ def build_face_edge_profile(face_gray):
     h, w = face_gray.shape[:2]
     left_energy = float(np.count_nonzero(edges[:, : w // 2])) / max(1, (w // 2) * h)
     right_energy = float(np.count_nonzero(edges[:, w // 2 :])) / max(1, (w - w // 2) * h)
-    return edges, left_energy, right_energy
+    edge_density = float(np.count_nonzero(edges)) / float(max(edges.size, 1))
+    return {
+        "leftEnergy": left_energy,
+        "rightEnergy": right_energy,
+        "edgeDensity": edge_density,
+    }
 
 
-def classify_pose(eye_selection, eye_quality, face_gray):
-    _, left_energy, right_energy = build_face_edge_profile(face_gray)
+def classify_pose(eye_selection, eye_quality, face_gray, edge_profile=None):
+    if edge_profile is None:
+        edge_profile = build_face_edge_profile(face_gray)
+    left_energy = edge_profile["leftEnergy"]
+    right_energy = edge_profile["rightEnergy"]
     asymmetry = right_energy - left_energy
     if len(eye_selection) >= 2:
         avg_aspect = sum(eye["aspect"] for eye in eye_selection) / len(eye_selection)
@@ -540,11 +548,6 @@ def stabilize_profile_keypoints(bbox, pose, keypoints):
     keypoints["chin"]["y"] = max(keypoints["chin"]["y"], int(y + h * 0.88))
 
 
-def compute_edge_density(face_gray):
-    edges = cv2.Canny(face_gray, 60, 140)
-    return float(np.count_nonzero(edges)) / float(max(edges.size, 1))
-
-
 def compute_noise_score(face_gray):
     denoised = cv2.GaussianBlur(face_gray, (5, 5), 0)
     residual = cv2.absdiff(face_gray, denoised)
@@ -555,7 +558,7 @@ def distance(point_a, point_b):
     return math.sqrt((point_a["x"] - point_b["x"]) ** 2 + (point_a["y"] - point_b["y"]) ** 2)
 
 
-def compute_deepfake_features(face_gray, bbox, keypoints, pose_label, eye_selection):
+def compute_deepfake_features(face_gray, bbox, keypoints, pose_label, eye_selection, edge_density):
     w = max(float(bbox[2]), 1.0)
     h = max(float(bbox[3]), 1.0)
     left_eye = keypoints["left_eye_center"]
@@ -572,7 +575,7 @@ def compute_deepfake_features(face_gray, bbox, keypoints, pose_label, eye_select
     center_axis_offset = round(abs(nose_tip["x"] - (bbox[0] + w / 2.0)) / w, 4)
     estimated_ratio = round(sum(1 for keypoint in keypoints.values() if keypoint["source"] != "detected") / float(max(len(keypoints), 1)), 4)
     eye_balance = round(abs(left_eye["y"] - right_eye["y"]) / h, 4)
-    edge_density = round(compute_edge_density(face_gray), 4)
+    edge_density = round(float(edge_density), 4)
     noise_score = round(compute_noise_score(face_gray), 4)
     eye_visibility = round(len(eye_selection) / 2.0, 4)
 
@@ -710,7 +713,8 @@ def build_face_output(image, preprocessed, candidates, request_uid):
             continue
         eye_response, eye_candidates = detect_eye_candidates(face_gray)
         eye_selection, eye_quality, eye_reason = select_eye_configuration(face_gray, eye_candidates)
-        pose_label, pose_confidence, pose_reason = classify_pose(eye_selection, eye_quality, face_gray)
+        edge_profile = build_face_edge_profile(face_gray)
+        pose_label, pose_confidence, pose_reason = classify_pose(eye_selection, eye_quality, face_gray, edge_profile)
         nose_response, nose_bridge_top, nose_tip = detect_nose_keypoints(face_gray, (x, y, w, h), pose_label)
         mouth_response, _, mouth_left, mouth_center, mouth_right = detect_mouth_keypoints(face_gray, (x, y, w, h), pose_label)
         keypoints = build_keypoints((x, y, w, h), pose_label, eye_selection, nose_bridge_top, nose_tip, mouth_left, mouth_center, mouth_right)
@@ -722,7 +726,14 @@ def build_face_output(image, preprocessed, candidates, request_uid):
         quality_label, quality_score = classify_quality(blur_score, brightness_score, contrast_score, pose_confidence, detected_ratio, min(w, h))
         connections = build_connections()
         regions = build_regions((x, y, w, h), keypoints)
-        deepfake_features = compute_deepfake_features(face_gray, (x, y, w, h), keypoints, pose_label, eye_selection)
+        deepfake_features = compute_deepfake_features(
+            face_gray,
+            (x, y, w, h),
+            keypoints,
+            pose_label,
+            eye_selection,
+            edge_profile["edgeDensity"],
+        )
         face = {
             "bbox": {"x": int(x), "y": int(y), "w": int(w), "h": int(h)},
             "detector": candidate["detector"],

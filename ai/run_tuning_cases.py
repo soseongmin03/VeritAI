@@ -1,0 +1,277 @@
+from __future__ import annotations
+
+import json
+import shutil
+from datetime import datetime
+from pathlib import Path
+
+import cv2
+
+try:
+    from ai import main as pipeline
+except ImportError:
+    import main as pipeline
+
+
+ROOT = Path(__file__).resolve().parents[1]
+CASE_DIR = ROOT / "ai" / "tuning_cases"
+RUN_DIR = ROOT / "images" / "tuning_runs"
+IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
+
+
+def analyze_file(image_path: Path) -> dict:
+    image = cv2.imread(str(image_path))
+    if image is None:
+        return {
+            "input": image_path.as_posix(),
+            "status": "failed",
+            "reason": "image-load-failed",
+        }
+
+    preprocessed = pipeline.preprocess_image(image)
+    request_uid, debug_paths = pipeline.make_debug_paths()
+    candidates = pipeline.detect_faces(preprocessed)
+    faces, debug_maps = pipeline.build_face_output(image, preprocessed, candidates, request_uid)
+
+    pipeline.draw_face_overlay(image, faces, debug_paths["overlay"])
+    pipeline.draw_analysis_map(image, faces, debug_paths["analysisMap"])
+    pipeline.draw_response_map(image, debug_maps["eye"], debug_paths["eyeResponse"], "Eye Response Map")
+    pipeline.draw_response_map(image, debug_maps["nose"], debug_paths["noseResponse"], "Nose Response Map")
+    pipeline.draw_response_map(image, debug_maps["mouth"], debug_paths["mouthResponse"], "Mouth Response Map")
+    pipeline.save_debug_metadata(request_uid, faces, debug_paths)
+
+    return {
+        "input": image_path.as_posix(),
+        "status": "ok",
+        "uid": request_uid,
+        "faceCount": len(faces),
+        "poses": [face["pose"]["label"] for face in faces],
+        "qualities": [face["quality"]["label"] for face in faces],
+        "detectedPointRatios": [face["quality"]["detectedPointRatio"] for face in faces],
+        "eyeClosureIndices": [
+            face.get("deepfakeFeatures", {}).get("visibility", {}).get("eyeClosureIndex", 0.0)
+            for face in faces
+        ],
+        "generatedFiles": {key: path.replace("\\", "/") for key, path in debug_paths.items()},
+    }
+
+
+def evaluate_result(category: str, result: dict) -> dict:
+    if result.get("status") != "ok":
+        return {"rating": "fail", "reason": result.get("reason", "analysis-failed")}
+
+    face_count = result.get("faceCount", 0)
+    poses = result.get("poses", [])
+    qualities = result.get("qualities", [])
+    detected_ratios = result.get("detectedPointRatios", [])
+    eye_closure = result.get("eyeClosureIndices", [])
+
+    if category == "false_positive":
+        if face_count == 0:
+            return {"rating": "pass", "reason": "no-face-detected-as-expected"}
+        return {"rating": "fail", "reason": f"false-positive-faceCount={face_count}"}
+
+    if category == "false_negative":
+        if face_count >= 1:
+            return {"rating": "pass", "reason": "face-detected"}
+        return {"rating": "fail", "reason": "expected-face-but-none-detected"}
+
+    if face_count == 0:
+        return {"rating": "fail", "reason": "no-face-detected"}
+
+    if category == "frontal_good":
+        if "frontal" in poses and any(ratio >= 0.4 for ratio in detected_ratios):
+            return {"rating": "pass", "reason": "frontal-pose-and-sufficient-detected-points"}
+        if any(quality == "good" for quality in qualities):
+            return {"rating": "warn", "reason": f"good-quality-but-pose={poses}"}
+        return {"rating": "fail", "reason": f"unexpected-pose={poses}"}
+
+    if category == "profile_left":
+        if "profile-left" in poses:
+            return {"rating": "pass", "reason": "profile-left-detected"}
+        if "profile-right" in poses:
+            return {"rating": "fail", "reason": "profile-direction-flipped"}
+        return {"rating": "warn", "reason": f"profile-left-not-detected poses={poses}"}
+
+    if category == "eyes_closed":
+        if "eyes_closed" in poses:
+            return {"rating": "pass", "reason": "eyes-closed-detected"}
+        if any(value >= 0.65 for value in eye_closure):
+            return {"rating": "warn", "reason": "high-eye-closure-index-but-pose-not-eyes_closed"}
+        return {"rating": "fail", "reason": f"eyes-closed-missed poses={poses}"}
+
+    if category == "occluded":
+        if "occluded" in poses:
+            return {"rating": "pass", "reason": "occlusion-detected"}
+        if any(ratio < 0.35 for ratio in detected_ratios):
+            return {"rating": "warn", "reason": "low-detected-point-ratio-suggests-occlusion"}
+        return {"rating": "fail", "reason": f"occlusion-missed poses={poses}"}
+
+    return {"rating": "warn", "reason": "no-category-rule"}
+
+
+def sanitize_part(value: str) -> str:
+    sanitized = "".join(char if char.isalnum() or char in {"-", "_"} else "-" for char in value)
+    return sanitized.strip("-") or "unknown"
+
+
+def classify_review_bucket(category: str, result: dict) -> str:
+    if result.get("status") != "ok":
+        return "analysis_failed"
+
+    evaluation = result.get("evaluation", {})
+    reason = evaluation.get("reason", "")
+
+    if category == "false_positive":
+        return "false_positive"
+    if category == "false_negative":
+        return "false_negative"
+    if "profile" in reason or "pose" in reason:
+        return "pose_mismatch"
+    if "eyes-closed" in reason:
+        return "eyes_closed_missed"
+    if "occlusion" in reason:
+        return "occlusion_missed"
+    if "no-face-detected" in reason:
+        return "missed_face"
+    if "detected-point-ratio" in reason:
+        return "low_detected_points"
+    return "review_needed"
+
+
+def export_review_artifacts(run_path: Path, result: dict) -> str | None:
+    evaluation = result.get("evaluation", {})
+    rating = evaluation.get("rating")
+    if rating not in {"fail", "warn"}:
+        return None
+
+    category = sanitize_part(result.get("category", "uncategorized"))
+    bucket = sanitize_part(classify_review_bucket(category, result))
+    source_path = Path(result["input"])
+    case_name = sanitize_part(source_path.stem)
+    uid = sanitize_part(result.get("uid", "no-uid"))
+
+    review_dir = run_path / "review" / bucket / rating / f"{case_name}-{uid}"
+    review_dir.mkdir(parents=True, exist_ok=True)
+
+    copied_files: dict[str, str] = {}
+
+    input_copy = review_dir / f"input{source_path.suffix.lower()}"
+    shutil.copy2(source_path, input_copy)
+    copied_files["input"] = input_copy.relative_to(ROOT).as_posix()
+
+    for key, file_path in result.get("generatedFiles", {}).items():
+        artifact_path = Path(file_path)
+        if not artifact_path.is_absolute():
+            artifact_path = ROOT / artifact_path
+        if artifact_path.exists():
+            target = review_dir / artifact_path.name
+            shutil.copy2(artifact_path, target)
+            copied_files[key] = target.relative_to(ROOT).as_posix()
+
+    case_summary = {
+        "input": source_path.relative_to(ROOT).as_posix(),
+        "category": result.get("category"),
+        "reviewBucket": bucket,
+        "evaluation": evaluation,
+        "poses": result.get("poses", []),
+        "qualities": result.get("qualities", []),
+        "faceCount": result.get("faceCount", 0),
+        "detectedPointRatios": result.get("detectedPointRatios", []),
+        "eyeClosureIndices": result.get("eyeClosureIndices", []),
+        "copiedFiles": copied_files,
+    }
+    summary_path = review_dir / "case_summary.json"
+    summary_path.write_text(json.dumps(case_summary, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    return review_dir.relative_to(ROOT).as_posix()
+
+
+def collect_cases() -> list[Path]:
+    cases = []
+    for path in CASE_DIR.rglob("*"):
+        if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS:
+            cases.append(path)
+    return sorted(cases)
+
+
+def write_summary(run_path: Path, results: list[dict]) -> None:
+    summary_json = run_path / "summary.json"
+    summary_md = run_path / "summary.md"
+
+    summary_payload = {
+        "generatedAt": datetime.now().isoformat(timespec="seconds"),
+        "caseDir": CASE_DIR.as_posix(),
+        "caseCount": len(results),
+        "criteriaVersion": "v2",
+        "reviewRoot": (run_path / "review").relative_to(ROOT).as_posix(),
+        "results": results,
+    }
+    summary_json.write_text(json.dumps(summary_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    lines = [
+        "# Tuning Case Summary",
+        "",
+        f"- Generated At: {summary_payload['generatedAt']}",
+        f"- Case Count: {len(results)}",
+        f"- Case Directory: `{CASE_DIR.as_posix()}`",
+        f"- Criteria Version: `{summary_payload['criteriaVersion']}`",
+        f"- Review Directory: `{summary_payload['reviewRoot']}`",
+        "",
+        "| Case | Category | Eval | Status | Face Count | Poses | Qualities | Review Dir |",
+        "|---|---|---|---:|---:|---|---|---|",
+    ]
+
+    for result in results:
+        case = Path(result["input"]).relative_to(ROOT).as_posix()
+        poses = ", ".join(result.get("poses", [])) if result.get("poses") else "-"
+        qualities = ", ".join(result.get("qualities", [])) if result.get("qualities") else "-"
+        evaluation = result.get("evaluation", {})
+        review_dir = result.get("reviewDir") or "-"
+        lines.append(
+            f"| `{case}` | {result.get('category', '-')} | {evaluation.get('rating', '-')} | "
+            f"{result['status']} | {result.get('faceCount', 0)} | {poses} | {qualities} | `{review_dir}` |"
+        )
+
+    lines.extend(
+        [
+            "",
+            "## Evaluation Rules",
+            "",
+            "- `frontal_good`: `frontal` pose and enough detected points means `pass`.",
+            "- `profile_left`: `profile-left` pose means `pass`.",
+            "- `eyes_closed`: `eyes_closed` pose means `pass`.",
+            "- `occluded`: `occluded` pose means `pass`.",
+            "- `false_positive`: zero detected faces means `pass`.",
+            "- `false_negative`: at least one detected face means `pass`.",
+            "",
+            "## Review Export",
+            "",
+            "- `warn` and `fail` cases are copied to `images/tuning_runs/<timestamp>/review/...`.",
+            "- Each review folder contains the original input image, generated analysis artifacts, and `case_summary.json`.",
+        ]
+    )
+
+    summary_md.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def main() -> None:
+    cases = collect_cases()
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_path = RUN_DIR / timestamp
+    run_path.mkdir(parents=True, exist_ok=True)
+
+    results = []
+    for case in cases:
+        result = analyze_file(case)
+        result["category"] = case.parent.name
+        result["evaluation"] = evaluate_result(result["category"], result)
+        result["reviewDir"] = export_review_artifacts(run_path, result)
+        results.append(result)
+
+    write_summary(run_path, results)
+    print(json.dumps({"runDir": run_path.as_posix(), "caseCount": len(results)}, ensure_ascii=False))
+
+
+if __name__ == "__main__":
+    main()
