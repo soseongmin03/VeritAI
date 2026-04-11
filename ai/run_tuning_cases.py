@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 CASE_DIR = ROOT / "ai" / "tuning_cases"
 RUN_DIR = ROOT / "images" / "tuning_runs"
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
+SKIP_NAME_TOKENS = ("_analysis", "_overlay", "_response", "case_summary")
 
 
 def analyze_file(image_path: Path) -> dict:
@@ -82,6 +83,8 @@ def evaluate_result(category: str, result: dict) -> dict:
     if category == "frontal_good":
         if "frontal" in poses and any(ratio >= 0.4 for ratio in detected_ratios):
             return {"rating": "pass", "reason": "frontal-pose-and-sufficient-detected-points"}
+        if "frontal" in poses:
+            return {"rating": "warn", "reason": "frontal-pose-but-detected-points-are-still-low"}
         if any(quality == "good" for quality in qualities):
             return {"rating": "warn", "reason": f"good-quality-but-pose={poses}"}
         return {"rating": "fail", "reason": f"unexpected-pose={poses}"}
@@ -93,12 +96,39 @@ def evaluate_result(category: str, result: dict) -> dict:
             return {"rating": "fail", "reason": "profile-direction-flipped"}
         return {"rating": "warn", "reason": f"profile-left-not-detected poses={poses}"}
 
-    if category == "eyes_closed":
+    if category == "profile_right":
+        if "profile-right" in poses:
+            return {"rating": "pass", "reason": "profile-right-detected"}
+        if "profile-left" in poses:
+            return {"rating": "fail", "reason": "profile-direction-flipped"}
+        return {"rating": "warn", "reason": f"profile-right-not-detected poses={poses}"}
+
+    if category in {"eyes_closed", "eyes_closed_frontal"}:
         if "eyes_closed" in poses:
             return {"rating": "pass", "reason": "eyes-closed-detected"}
         if any(value >= 0.65 for value in eye_closure):
             return {"rating": "warn", "reason": "high-eye-closure-index-but-pose-not-eyes_closed"}
+        if "frontal" in poses:
+            return {"rating": "warn", "reason": "frontal-detected-but-eyes-closed-label-missed"}
         return {"rating": "fail", "reason": f"eyes-closed-missed poses={poses}"}
+
+    if category == "eyes_closed_profile":
+        if "eyes_closed" in poses:
+            return {"rating": "pass", "reason": "eyes-closed-detected"}
+        if any(pose in {"profile-left", "profile-right"} for pose in poses) and any(value >= 0.12 for value in eye_closure):
+            return {"rating": "pass", "reason": "profile-detected-with-meaningful-eye-closure-signal"}
+        if any(pose in {"profile-left", "profile-right"} for pose in poses):
+            return {"rating": "warn", "reason": "profile-detected-but-eye-closure-signal-is-weak"}
+        if any(value >= 0.65 for value in eye_closure):
+            return {"rating": "warn", "reason": "high-eye-closure-index-but-profile-label-missed"}
+        return {"rating": "fail", "reason": f"eyes-closed-profile-missed poses={poses}"}
+
+    if category == "eyes_closed_occluded":
+        if "eyes_closed" in poses or "occluded" in poses:
+            return {"rating": "pass", "reason": "occluded-or-eyes-closed-detected"}
+        if any(value >= 0.65 for value in eye_closure) or any(ratio < 0.35 for ratio in detected_ratios):
+            return {"rating": "warn", "reason": "occluded-eyes-closed-signal-present-but-label-missed"}
+        return {"rating": "fail", "reason": f"eyes-closed-occluded-missed poses={poses}"}
 
     if category == "occluded":
         if "occluded" in poses:
@@ -108,6 +138,33 @@ def evaluate_result(category: str, result: dict) -> dict:
         return {"rating": "fail", "reason": f"occlusion-missed poses={poses}"}
 
     return {"rating": "warn", "reason": "no-category-rule"}
+
+
+def detect_label_issue(category: str, result: dict) -> str | None:
+    if result.get("status") != "ok":
+        return None
+
+    face_count = result.get("faceCount", 0)
+    poses = result.get("poses", [])
+    qualities = result.get("qualities", [])
+    detected_ratios = result.get("detectedPointRatios", [])
+    eye_closure = result.get("eyeClosureIndices", [])
+
+    if category == "false_positive" and face_count > 0 and any(label == "good" for label in qualities):
+        return "possible-mislabeled-false-positive"
+    if category == "profile_left" and "profile-right" in poses:
+        return "possible-direction-label-mismatch"
+    if category == "profile_right" and "profile-left" in poses:
+        return "possible-direction-label-mismatch"
+    if category == "frontal_good" and any(pose in {"profile-left", "profile-right"} for pose in poses) and any(ratio >= 0.3 for ratio in detected_ratios):
+        return "possible-semi-profile-mixed-into-frontal"
+    if category in {"eyes_closed", "eyes_closed_frontal"} and "frontal" in poses and max(eye_closure or [0.0]) < 0.12:
+        return "eyes-closed-label-but-closure-signal-weak"
+    if category == "eyes_closed_profile" and "frontal" in poses:
+        return "possible-profile-label-mismatch"
+    if category == "eyes_closed_occluded" and "occluded" not in poses and max(eye_closure or [0.0]) < 0.12:
+        return "possible-occluded-label-mismatch"
+    return None
 
 
 def sanitize_part(value: str) -> str:
@@ -174,6 +231,7 @@ def export_review_artifacts(run_path: Path, result: dict) -> str | None:
         "category": result.get("category"),
         "reviewBucket": bucket,
         "evaluation": evaluation,
+        "labelIssue": result.get("labelIssue"),
         "poses": result.get("poses", []),
         "qualities": result.get("qualities", []),
         "faceCount": result.get("faceCount", 0),
@@ -190,8 +248,14 @@ def export_review_artifacts(run_path: Path, result: dict) -> str | None:
 def collect_cases() -> list[Path]:
     cases = []
     for path in CASE_DIR.rglob("*"):
-        if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS:
-            cases.append(path)
+        if not path.is_file() or path.suffix.lower() not in IMAGE_EXTENSIONS:
+            continue
+        name_lower = path.stem.lower()
+        if any(token in name_lower for token in SKIP_NAME_TOKENS):
+            continue
+        if path.name.startswith("."):
+            continue
+        cases.append(path)
     return sorted(cases)
 
 
@@ -203,7 +267,7 @@ def write_summary(run_path: Path, results: list[dict]) -> None:
         "generatedAt": datetime.now().isoformat(timespec="seconds"),
         "caseDir": CASE_DIR.as_posix(),
         "caseCount": len(results),
-        "criteriaVersion": "v2",
+        "criteriaVersion": "v3",
         "reviewRoot": (run_path / "review").relative_to(ROOT).as_posix(),
         "results": results,
     }
@@ -240,7 +304,10 @@ def write_summary(run_path: Path, results: list[dict]) -> None:
             "",
             "- `frontal_good`: `frontal` pose and enough detected points means `pass`.",
             "- `profile_left`: `profile-left` pose means `pass`.",
-            "- `eyes_closed`: `eyes_closed` pose means `pass`.",
+            "- `profile_right`: `profile-right` pose means `pass`.",
+            "- `eyes_closed_frontal`: `eyes_closed` pose means `pass`, and `frontal` with strong closure becomes `warn`.",
+            "- `eyes_closed_profile`: `eyes_closed` or `profile-*` with meaningful closure signal means `pass`.",
+            "- `eyes_closed_occluded`: `occluded` or `eyes_closed` pose means `pass`.",
             "- `occluded`: `occluded` pose means `pass`.",
             "- `false_positive`: zero detected faces means `pass`.",
             "- `false_negative`: at least one detected face means `pass`.",
@@ -251,6 +318,13 @@ def write_summary(run_path: Path, results: list[dict]) -> None:
             "- Each review folder contains the original input image, generated analysis artifacts, and `case_summary.json`.",
         ]
     )
+
+    label_issues = [result for result in results if result.get("labelIssue")]
+    if label_issues:
+        lines.extend(["", "## Label Quality Notes", ""])
+        for result in label_issues:
+            case = Path(result["input"]).relative_to(ROOT).as_posix()
+            lines.append(f"- `{case}`: `{result['labelIssue']}`")
 
     summary_md.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -266,6 +340,7 @@ def main() -> None:
         result = analyze_file(case)
         result["category"] = case.parent.name
         result["evaluation"] = evaluate_result(result["category"], result)
+        result["labelIssue"] = detect_label_issue(result["category"], result)
         result["reviewDir"] = export_review_artifacts(run_path, result)
         results.append(result)
 

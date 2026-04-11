@@ -2,8 +2,8 @@ console.log("VeritAI content script loaded");
 
 const API_URL = "http://localhost:8080/api/detections";
 const BUTTON_CLASS = "veritai-check-btn";
-const BUTTON_IDLE_LABEL = "🔍";
-const BUTTON_BUSY_LABEL = "⏳";
+const BUTTON_IDLE_LABEL = "\uac80\uc0ac";
+const BUTTON_BUSY_LABEL = "\ubd84\uc11d\uc911";
 
 let isProcessing = false;
 let attachQueued = false;
@@ -38,26 +38,26 @@ function createButton(media) {
     const btn = document.createElement("button");
     btn.innerText = BUTTON_IDLE_LABEL;
     btn.className = BUTTON_CLASS;
-    btn.title = "VeritAI analyze";
-    btn.setAttribute("aria-label", "VeritAI analyze");
+    btn.title = "VeritAI \uac80\uc0ac";
+    btn.setAttribute("aria-label", "VeritAI \uac80\uc0ac");
     btn.style.cssText = `
         position: absolute;
         top: 10px;
         left: 10px;
         z-index: 2147483647;
-        width: 38px;
+        width: 48px;
         height: 38px;
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        padding: 0;
+        padding: 0 6px;
         background-color: #e74c3c;
         color: white;
         border: 2px solid white;
         border-radius: 999px;
         cursor: pointer;
         font-weight: bold;
-        font-size: 16px;
+        font-size: 12px;
         box-shadow: 0 2px 5px rgba(0, 0, 0, 0.3);
     `;
 
@@ -66,7 +66,7 @@ function createButton(media) {
         event.stopPropagation();
 
         if (isProcessing) {
-            alert("Another analysis is already in progress.");
+            alert("\ub2e4\ub978 \uac80\uc0ac\uac00 \uc774\ubbf8 \uc9c4\ud589 \uc911\uc785\ub2c8\ub2e4.");
             return;
         }
 
@@ -87,9 +87,9 @@ function createButton(media) {
             console.error("Media analysis failed:", error);
             const message = error?.message || String(error);
             if (message.includes("Extension context invalidated")) {
-                alert("The extension was reloaded. Refresh the page and try again.");
+                alert("\ud655\uc7a5 \ud504\ub85c\uadf8\ub7a8\uc774 \ub2e4\uc2dc \ub85c\ub4dc\ub418\uc5c8\uc2b5\ub2c8\ub2e4. \ud398\uc774\uc9c0\ub97c \uc0c8\ub85c\uace0\uce68\ud55c \ub4a4 \ub2e4\uc2dc \uc2dc\ub3c4\ud574\uc8fc\uc138\uc694.");
             } else {
-                alert(`Error: ${message}`);
+                alert(`\uc624\ub958: ${message}`);
             }
         } finally {
             btn.innerText = BUTTON_IDLE_LABEL;
@@ -144,12 +144,12 @@ function scheduleAttachButtons() {
 
 async function captureVideoBlob(video) {
     if (!video) {
-        throw new Error("Video element not found.");
+        throw new Error("\uc601\uc0c1 \uc694\uc18c\ub97c \ucc3e\uc744 \uc218 \uc5c6\uc2b5\ub2c8\ub2e4.");
     }
 
     const rect = video.getBoundingClientRect();
     if (rect.width === 0 || rect.height === 0) {
-        throw new Error("Video element has zero size.");
+        throw new Error("\uc601\uc0c1 \ud06c\uae30\uac00 0\uc785\ub2c8\ub2e4.");
     }
 
     return new Promise((resolve, reject) => {
@@ -159,7 +159,7 @@ async function captureVideoBlob(video) {
                 return;
             }
             if (!response || response.error || !response.dataUrl) {
-                reject(new Error(response?.error || "No capture data returned."));
+                reject(new Error(response?.error || "\ucea1\ucc98 \ub370\uc774\ud130\ub97c \ubc1b\uc544\uc624\uc9c0 \ubabb\ud588\uc2b5\ub2c8\ub2e4."));
                 return;
             }
 
@@ -169,7 +169,7 @@ async function captureVideoBlob(video) {
                     const canvas = document.createElement("canvas");
                     const ctx = canvas.getContext("2d");
                     if (!ctx) {
-                        reject(new Error("Canvas context creation failed."));
+                        reject(new Error("\uce94\ubc84\uc2a4 \ucee8\ud14d\uc2a4\ud2b8\ub97c \uc0dd\uc131\ud558\uc9c0 \ubabb\ud588\uc2b5\ub2c8\ub2e4."));
                         return;
                     }
 
@@ -194,7 +194,7 @@ async function captureVideoBlob(video) {
 
                     canvas.toBlob((blob) => {
                         if (!blob) {
-                            reject(new Error("Failed to generate video frame blob."));
+                            reject(new Error("\uc601\uc0c1 \ud504\ub808\uc784 \ub370\uc774\ud130\ub97c \uc0dd\uc131\ud558\uc9c0 \ubabb\ud588\uc2b5\ub2c8\ub2e4."));
                             return;
                         }
                         resolve(blob);
@@ -203,7 +203,7 @@ async function captureVideoBlob(video) {
                     reject(error);
                 }
             };
-            fullImage.onerror = () => reject(new Error("Failed to load captured tab image."));
+            fullImage.onerror = () => reject(new Error("\ucea1\ucc98\ud55c \ud0ed \uc774\ubbf8\uc9c0\ub97c \ubd88\ub7ec\uc624\uc9c0 \ubabb\ud588\uc2b5\ub2c8\ub2e4."));
             fullImage.src = response.dataUrl;
         });
     });
@@ -211,7 +211,7 @@ async function captureVideoBlob(video) {
 
 async function captureImageBlob(url) {
     if (!url) {
-        throw new Error("Image URL is missing.");
+        throw new Error("\uc774\ubbf8\uc9c0 \uc8fc\uc18c\uac00 \uc5c6\uc2b5\ub2c8\ub2e4.");
     }
 
     return new Promise((resolve, reject) => {
@@ -224,7 +224,7 @@ async function captureImageBlob(url) {
                 const canvas = document.createElement("canvas");
                 const ctx = canvas.getContext("2d");
                 if (!ctx) {
-                    reject(new Error("Canvas context creation failed."));
+                    reject(new Error("\uce94\ubc84\uc2a4 \ucee8\ud14d\uc2a4\ud2b8\ub97c \uc0dd\uc131\ud558\uc9c0 \ubabb\ud588\uc2b5\ub2c8\ub2e4."));
                     return;
                 }
 
@@ -232,14 +232,14 @@ async function captureImageBlob(url) {
                 canvas.height = img.naturalHeight || img.height;
 
                 if (canvas.width === 0 || canvas.height === 0) {
-                    reject(new Error("Image size is zero."));
+                    reject(new Error("\uc774\ubbf8\uc9c0 \ud06c\uae30\uac00 0\uc785\ub2c8\ub2e4."));
                     return;
                 }
 
                 ctx.drawImage(img, 0, 0);
                 canvas.toBlob((blob) => {
                     if (!blob) {
-                        reject(new Error("Failed to generate image blob."));
+                        reject(new Error("\uc774\ubbf8\uc9c0 \ub370\uc774\ud130\ub97c \uc0dd\uc131\ud558\uc9c0 \ubabb\ud588\uc2b5\ub2c8\ub2e4."));
                         return;
                     }
                     resolve(blob);
@@ -249,14 +249,14 @@ async function captureImageBlob(url) {
             }
         };
 
-        img.onerror = () => reject(new Error("Failed to load image."));
+        img.onerror = () => reject(new Error("\uc774\ubbf8\uc9c0\ub97c \ubd88\ub7ec\uc624\uc9c0 \ubabb\ud588\uc2b5\ub2c8\ub2e4."));
         img.src = url;
     });
 }
 
 function buildFaceSummary(faces) {
     if (!faces.length) {
-        return "\n\nNo faces were detected. Try an image with a larger or clearer face.";
+        return "\n\n\uac10\uc9c0\ub41c \uc5bc\uad74\uc774 \uc5c6\uc2b5\ub2c8\ub2e4. \uc5bc\uad74\uc774 \ub354 \ud06c\uac70\ub098 \uc120\uba85\ud55c \uc774\ubbf8\uc9c0\ub97c \uc0ac\uc6a9\ud574\ubcf4\uc138\uc694.";
     }
 
     return "\n\n" + faces.slice(0, 3).map((face, index) => {
@@ -266,11 +266,11 @@ function buildFaceSummary(faces) {
         const qualityScore = (quality?.score ?? 0) * 100;
 
         return [
-            `[Face ${index + 1}]`,
-            `Position: (${bbox.x ?? "?"}, ${bbox.y ?? "?"}, ${bbox.w ?? "?"}x${bbox.h ?? "?"})`,
-            `Type: ${face?.faceMode || "unknown"}`,
-            `Detection confidence: ${detectionConfidence.toFixed(1)}%`,
-            `Quality: ${quality?.label || "unknown"} (${qualityScore.toFixed(1)}%)`,
+            `[\uc5bc\uad74 ${index + 1}]`,
+            `\uc704\uce58: (${bbox.x ?? "?"}, ${bbox.y ?? "?"}, ${bbox.w ?? "?"}x${bbox.h ?? "?"})`,
+            `\uc720\ud615: ${face?.faceMode || "\uc54c \uc218 \uc5c6\uc74c"}`,
+            `\uac80\ucd9c \uc2e0\ub8b0\ub3c4: ${detectionConfidence.toFixed(1)}%`,
+            `\ud488\uc9c8: ${quality?.label || "\uc54c \uc218 \uc5c6\uc74c"} (${qualityScore.toFixed(1)}%)`,
         ].join("\n");
     }).join("\n\n");
 }
@@ -288,12 +288,12 @@ async function sendToBackend(blob, mediaType) {
     });
 
     if (!response.ok) {
-        throw new Error(`Server response error: ${response.status} / ${await response.text()}`);
+        throw new Error(`\uc11c\ubc84 \uc751\ub2f5 \uc624\ub958: ${response.status} / ${await response.text()}`);
     }
 
     const data = await response.json();
     if (!data || data.status !== "DONE" || !data.result) {
-        throw new Error(data?.message || "Analysis did not complete successfully.");
+        throw new Error(data?.message || "\ubd84\uc11d\uc774 \uc815\uc0c1\uc801\uc73c\ub85c \uc644\ub8cc\ub418\uc9c0 \uc54a\uc558\uc2b5\ub2c8\ub2e4.");
     }
 
     const result = data.result;
@@ -301,14 +301,14 @@ async function sendToBackend(blob, mediaType) {
     const faces = Array.isArray(result.faces) ? result.faces : [];
 
     alert(
-        `Request ID: ${data.requestId}\n` +
-        `Decision: ${result.isDeepfake ? "Deepfake suspected" : "Normal"}\n` +
-        `Confidence: ${confidence}%\n` +
-        `Face count: ${result.faceCount}\n` +
-        `Watermark detected: ${result.watermarkDetected ? "Yes" : "No"}\n` +
-        `Model version: ${result.modelVersion}\n` +
-        `Processing time: ${result.processingTimeMs}ms\n` +
-        `Message: ${result.message}` +
+        `\uc694\uccad ID: ${data.requestId}\n` +
+        `\ud310\uc815 \uacb0\uacfc: ${result.isDeepfake ? "\ub515\ud398\uc774\ud06c \uc758\uc2ec" : "\uc815\uc0c1"}\n` +
+        `\uc2e0\ub8b0\ub3c4: ${confidence}%\n` +
+        `\uac10\uc9c0\ub41c \uc5bc\uad74 \uc218: ${result.faceCount}\n` +
+        `\uc6cc\ud130\ub9c8\ud06c \uac10\uc9c0: ${result.watermarkDetected ? "\uc608" : "\uc544\ub2c8\uc624"}\n` +
+        `\ubaa8\ub378 \ubc84\uc804: ${result.modelVersion}\n` +
+        `\ucc98\ub9ac \uc2dc\uac04: ${result.processingTimeMs}ms\n` +
+        `\ubd84\uc11d \uba54\uc2dc\uc9c0: ${result.message}` +
         buildFaceSummary(faces)
     );
 }
