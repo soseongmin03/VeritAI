@@ -1,278 +1,360 @@
 console.log("VeritAI content script loaded");
-
 const API_URL = "http://localhost:8080/api/detections";
-const BUTTON_CLASS = "veritai-check-btn";
-const BUTTON_IDLE_LABEL = "\uac80\uc0ac";
-const BUTTON_BUSY_LABEL = "\ubd84\uc11d\uc911";
 
-let isProcessing = false;
-let attachQueued = false;
+let isSystemOn = true;
+let isAutoScanMode = false;
 
-function isVisibleMedia(media) {
-    const rect = media.getBoundingClientRect();
-    return (
-        rect.width >= 80 &&
-        rect.height >= 80 &&
-        rect.bottom > 0 &&
-        rect.right > 0 &&
-        rect.top < window.innerHeight &&
-        rect.left < window.innerWidth
-    );
+function updateStatusBadge(media, status, data = null) {
+    const wrapper = ensureWrapper(media);
+    if (!wrapper) return;
+
+    let uiContainer = wrapper.querySelector('.veritai-ui-container');
+    if (!uiContainer) {
+        uiContainer = document.createElement('div');
+        uiContainer.className = 'veritai-ui-container';
+        uiContainer.style.cssText = `
+            position: absolute; top: 6px; left: 6px; z-index: 2147483647;
+            display: flex; flex-direction: column; align-items: flex-start;
+        `;
+        wrapper.appendChild(uiContainer);
+    }
+
+    let badge = uiContainer.querySelector('.veritai-status-badge');
+    if (!badge) {
+        badge = document.createElement('div');
+        badge.className = 'veritai-status-badge';
+        badge.style.cssText = `
+            padding: 4px 8px; border-radius: 4px; color: white; font-size: 11px; 
+            font-weight: bold; font-family: sans-serif; box-shadow: 0 2px 4px rgba(0,0,0,0.5);
+            transition: all 0.2s ease; user-select: none;
+        `;
+        uiContainer.appendChild(badge);
+    }
+
+    badge.onclick = null;
+    badge.style.cursor = "default";
+    media.style.border = "none";
+
+    if (status === "loading") {
+        badge.innerText = "분석 중...";
+        badge.style.background = "blue";
+    }
+    else if (status === "error") {
+        const errorMsg = data?.message || "분석 실패";
+        badge.innerText = errorMsg;
+        badge.style.background = "dimgray";
+        
+        setTimeout(() => {
+            if (uiContainer && uiContainer.parentNode) {
+                uiContainer.remove();
+            }
+        }, 3000);
+    }
+    else if (status === "fake" || status === "real") {
+        badge.style.cursor = "pointer";
+
+        if (status === "fake") {
+            const conf = ((data.result.confidence || 0) * 100).toFixed(1);
+            badge.innerText = `조작 의심 (${conf}%)`;
+            badge.style.background = "red";
+            media.style.border = "2px solid red";
+        } else {
+            badge.innerText = "정상 이미지";
+            badge.style.background = "green";
+            media.style.border = "2px solid green";
+        }
+
+        badge.onclick = (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+
+            const existingBox = document.querySelector('.veritai-details-box');
+            if (existingBox) {
+                existingBox.remove();
+                if (existingBox.dataset.targetMedia === (media.currentSrc || media.src)) return;
+            }
+
+            const result = data.result;
+            const faces = result.faces || [];
+            const faceText = faces.length === 0 ? "검출된 얼굴 없음" :
+                faces.slice(0, 3).map((f, i) => {
+                    const bbox = f.bbox || {};
+                    const quality = f.quality || {};
+                    const detConf = ((f.detectionConfidence || f.score || 0) * 100).toFixed(1);
+                    const qualScore = ((quality.score || 0) * 100).toFixed(1);
+                    return `<span style="color:yellow; font-weight:bold;">[얼굴 ${i + 1}]</span>
+ - 유형: ${f.faceMode || '?'}
+ - 검출 신뢰도: ${detConf}%
+ - 위치: (${bbox.x || '?'}, ${bbox.y || '?'}, ${bbox.w || '?'}x${bbox.h || '?'})
+ - 품질: ${quality.label || '?'} (${qualScore}%)`;
+                }).join("\n\n");
+
+            const detailsBox = document.createElement('div');
+            detailsBox.className = 'veritai-details-box';
+            detailsBox.dataset.targetMedia = media.currentSrc || media.src; 
+
+            const badgeRect = badge.getBoundingClientRect();
+
+            Object.assign(detailsBox.style, {
+                position: "fixed", 
+                top: `${badgeRect.bottom + 5}px`,
+                left: `${badgeRect.left}px`,
+                zIndex: "2147483647",
+                background: "black",
+                backdropFilter: "blur(10px)",
+                color: "white",
+                padding: "15px",
+                borderRadius: "12px",
+                border: `1px solid ${status === "fake" ? "red" : "green"}`,
+                fontSize: "12px",
+                whiteSpace: "pre-wrap",
+                lineHeight: "1.6",
+                boxShadow: "0 20px 25px -5px rgba(0, 0, 0, 0.7)",
+                fontFamily: "monospace",
+                width: "280px",
+                maxHeight: "400px",
+                overflowY: "auto",
+                textAlign: "left",
+                cursor: "default",
+                pointerEvents: "auto"
+            });
+
+            detailsBox.innerHTML = `
+                <div style="color:lightskyblue; font-weight:bold; margin-bottom:10px; border-bottom:1px solid grey; padding-bottom:6px; font-size:14px; display:flex; justify-content:space-between;">
+                    <span>🔍 분석 리포트</span>
+                    <span style="cursor:pointer; color:gray;" onclick="this.closest('.veritai-details-box').remove()">✕</span>
+</div>
+<b>ID:</b> ${data.requestId}
+<b>판정:</b> ${result.isDeepfake ? "<span style='color:crimson; font-weight:bold;'>조작 의심</span>" : "<span style='color:green; font-weight:bold;'>정상</span>"} (${((result.confidence || 0) * 100).toFixed(1)}%)
+<b>시간:</b> ${result.processingTimeMs}ms
+<b>얼굴 수:</b> ${result.faceCount || faces.length}명
+<div style="margin:10px 0; border-top:1px dashed grey;"></div>
+${faceText}
+            `.trim();
+
+            detailsBox.onclick = (evt) => evt.stopPropagation();
+            document.body.appendChild(detailsBox);
+
+            setTimeout(() => {
+                const closeDetails = (evt) => {
+                    if (!detailsBox.contains(evt.target) && !badge.contains(evt.target)) {
+                        detailsBox.remove();
+                        document.removeEventListener('click', closeDetails);
+                    }
+                };
+                document.addEventListener('click', closeDetails);
+            }, 10);
+        };
+    }
 }
 
-function ensureWrapper(media) {
-    const parent = media.parentElement;
-    if (!parent) {
-        return null;
+async function startInspection(media) {
+    if (media.dataset.veritaiScanned === "true" || !isSystemOn) return;
+    media.dataset.veritaiScanned = "true";
+
+    const wrapper = ensureWrapper(media);
+    if (wrapper) {
+        const btn = wrapper.querySelector('.veritai-check-btn');
+        if (btn) btn.remove();
     }
 
-    const style = window.getComputedStyle(parent);
-    if (style.position === "static") {
+    try {
+        updateStatusBadge(media, "loading");
+
+        let blob;
+        let mediaType = "image";
+        if (media.tagName === "VIDEO") {
+            blob = await captureVideoBlob(media);
+            mediaType = "video_frame";
+        } else {
+            blob = await captureImageBlob(media.currentSrc || media.src);
+        }
+
+        const data = await sendToBackend(blob, mediaType);
+        
+        if (data.result.isDeepfake) {
+            updateStatusBadge(media, "fake", data);
+        } else {
+            updateStatusBadge(media, "real", data);
+        }
+
+    } catch (err) {
+        console.error("Analysis Error:", err);
+        let friendlyMessage = "분석 오류";
+        if (err.name === 'TypeError' && err.message === 'Failed to fetch') {
+            friendlyMessage = "서버 연결 실패";
+        } 
+        else if (err.message && err.message.includes("서버 응답 오류")) {
+            friendlyMessage = "서버 응답 오류";
+        }
+        else if (err.message && err.message.includes("CORS")) {
+            friendlyMessage = "보안 차단됨";
+        }
+        updateStatusBadge(media, "error", { message: friendlyMessage });
+        delete media.dataset.veritaiScanned;
+    }
+}
+
+const autoScanObserver = new IntersectionObserver((entries) => {
+    if (!isSystemOn || !isAutoScanMode) return;
+    entries.forEach(entry => {
+        if (entry.isIntersecting && entry.target.clientWidth > 80) {
+            startInspection(entry.target);
+        }
+    });
+}, { threshold: 0.1 });
+
+const domObserver = new MutationObserver((mutations) => {
+    if (!isSystemOn) return;
+    mutations.forEach(mutation => {
+        mutation.addedNodes.forEach(node => {
+            if (node.nodeType !== 1) return; 
+            if (node.tagName === 'IMG' || node.tagName === 'VIDEO') {
+                attachUI(node);
+            } else {
+                node.querySelectorAll('img, video').forEach(media => attachUI(media));
+            }
+        });
+    });
+});
+
+function ensureWrapper(media) {
+    let parent = media.parentElement;
+    if (!parent) return null;
+
+    if (parent.tagName === 'PICTURE') {
+        parent = parent.parentElement;
+    }
+
+    if (getComputedStyle(parent).position === "static") {
         parent.style.position = "relative";
     }
-
     return parent;
 }
 
-function createButton(media) {
-    const btn = document.createElement("button");
-    btn.innerText = BUTTON_IDLE_LABEL;
-    btn.className = BUTTON_CLASS;
-    btn.title = "VeritAI \uac80\uc0ac";
-    btn.setAttribute("aria-label", "VeritAI \uac80\uc0ac");
-    btn.style.cssText = `
-        position: absolute;
-        top: 10px;
-        left: 10px;
-        z-index: 2147483647;
-        width: 48px;
-        height: 38px;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        padding: 0 6px;
-        background-color: #e74c3c;
-        color: white;
-        border: 2px solid white;
-        border-radius: 999px;
-        cursor: pointer;
-        font-weight: bold;
-        font-size: 12px;
-        box-shadow: 0 2px 5px rgba(0, 0, 0, 0.3);
-    `;
+function attachUI(media) {
+    if (media.dataset.veritaiAttached || media.clientWidth < 80 || media.clientHeight < 80) return;
+    media.dataset.veritaiAttached = "true";
 
-    btn.addEventListener("click", async (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-
-        if (isProcessing) {
-            alert("\ub2e4\ub978 \uac80\uc0ac\uac00 \uc774\ubbf8 \uc9c4\ud589 \uc911\uc785\ub2c8\ub2e4.");
-            return;
-        }
-
-        isProcessing = true;
-        btn.innerText = BUTTON_BUSY_LABEL;
-        btn.disabled = true;
-
-        try {
-            let blob;
-            if (media.tagName === "VIDEO") {
-                blob = await captureVideoBlob(media);
-                await sendToBackend(blob, "video_frame");
-            } else if (media.tagName === "IMG") {
-                blob = await captureImageBlob(media.currentSrc || media.src);
-                await sendToBackend(blob, "image");
-            }
-        } catch (error) {
-            console.error("Media analysis failed:", error);
-            const message = error?.message || String(error);
-            if (message.includes("Extension context invalidated")) {
-                alert("\ud655\uc7a5 \ud504\ub85c\uadf8\ub7a8\uc774 \ub2e4\uc2dc \ub85c\ub4dc\ub418\uc5c8\uc2b5\ub2c8\ub2e4. \ud398\uc774\uc9c0\ub97c \uc0c8\ub85c\uace0\uce68\ud55c \ub4a4 \ub2e4\uc2dc \uc2dc\ub3c4\ud574\uc8fc\uc138\uc694.");
-            } else {
-                alert(`\uc624\ub958: ${message}`);
-            }
-        } finally {
-            btn.innerText = BUTTON_IDLE_LABEL;
-            btn.disabled = false;
-            isProcessing = false;
-        }
-    });
-
-    return btn;
-}
-
-function attachButtons() {
-    const mediaList = document.querySelectorAll("video, img");
-
-    mediaList.forEach((media) => {
-        if (!media.isConnected) {
-            return;
-        }
-        if (!(media instanceof HTMLImageElement || media instanceof HTMLVideoElement)) {
-            return;
-        }
-        if (!isVisibleMedia(media)) {
-            return;
-        }
-
+    if (isAutoScanMode) {
+        autoScanObserver.observe(media);
+    } else {
         const wrapper = ensureWrapper(media);
-        if (!wrapper) {
-            return;
-        }
-        if (wrapper.querySelector(`:scope > .${BUTTON_CLASS}`)) {
-            return;
-        }
+        if (wrapper && !wrapper.querySelector('.veritai-check-btn')) {
+            const btn = document.createElement("button");
+            btn.innerText = "🔍 검사";
+            btn.className = "veritai-check-btn";
+            btn.style.cssText = `
+                position: absolute; top: 10px; left: 10px; z-index: 2147483647;
+                padding: 4px 8px; background-color: midnightblue; color: aqua;
+                border: 1px solid aqua; border-radius: 999px; cursor: pointer;
+                font-weight: bold; font-size: 11px; backdrop-filter: blur(2px);
+            `;
 
-        if (media.tagName === "IMG" && !media.currentSrc && !media.src) {
-            return;
+            btn.addEventListener("click", (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                startInspection(media);
+            });
+            wrapper.appendChild(btn);
         }
-
-        wrapper.appendChild(createButton(media));
-    });
-}
-
-function scheduleAttachButtons() {
-    if (attachQueued) {
-        return;
     }
-    attachQueued = true;
-    window.requestAnimationFrame(() => {
-        attachQueued = false;
-        attachButtons();
-    });
 }
+
+chrome.runtime.onMessage.addListener((msg) => {
+    if (msg.action === "TOGGLE_SYSTEM") {
+        isSystemOn = msg.isSystemOn;
+        isAutoScanMode = msg.isAutoScanOn;
+        clearAllUI();
+        if (isSystemOn) {
+            document.querySelectorAll('img, video').forEach(media => attachUI(media));
+            domObserver.observe(document.body, { childList: true, subtree: true });
+        } else {
+            autoScanObserver.disconnect();
+            domObserver.disconnect();
+        }
+    }
+});
+
+function clearAllUI() {
+    document.querySelectorAll('img, video').forEach(media => {
+        media.style.border = "none";
+        delete media.dataset.veritaiScanned;
+        delete media.dataset.veritaiAttached;
+        const wrapper = media.parentElement;
+        if (wrapper) {
+            const container = wrapper.querySelector('.veritai-ui-container');
+            if (container) container.remove();
+            const btn = wrapper.querySelector('.veritai-check-btn');
+            if (btn) btn.remove();
+        }
+    });
+    document.querySelectorAll('.veritai-details-box').forEach(box => box.remove());
+}
+
+chrome.storage.local.get(['isSystemOn', 'isAutoScanOn'], (result) => {
+    isSystemOn = result.isSystemOn !== false;
+    isAutoScanMode = result.isAutoScanOn || false;
+    setTimeout(() => {
+        if (isSystemOn) {
+            document.querySelectorAll('img, video').forEach(media => attachUI(media));
+            domObserver.observe(document.body, { childList: true, subtree: true });
+        }
+    }, 500);
+});
 
 async function captureVideoBlob(video) {
-    if (!video) {
-        throw new Error("\uc601\uc0c1 \uc694\uc18c\ub97c \ucc3e\uc744 \uc218 \uc5c6\uc2b5\ub2c8\ub2e4.");
-    }
-
-    const rect = video.getBoundingClientRect();
-    if (rect.width === 0 || rect.height === 0) {
-        throw new Error("\uc601\uc0c1 \ud06c\uae30\uac00 0\uc785\ub2c8\ub2e4.");
-    }
+    if (!video) throw new Error("영상 요소를 찾을 수 없습니다.");
+    const width = video.videoWidth || video.clientWidth;
+    const height = video.videoHeight || video.clientHeight;
+    if (width === 0 || height === 0) throw new Error("영상 크기를 인식할 수 없습니다.");
 
     return new Promise((resolve, reject) => {
-        chrome.runtime.sendMessage({ action: "capture_tab" }, (response) => {
-            if (chrome.runtime.lastError) {
-                reject(new Error(chrome.runtime.lastError.message));
-                return;
-            }
-            if (!response || response.error || !response.dataUrl) {
-                reject(new Error(response?.error || "\ucea1\ucc98 \ub370\uc774\ud130\ub97c \ubc1b\uc544\uc624\uc9c0 \ubabb\ud588\uc2b5\ub2c8\ub2e4."));
-                return;
-            }
-
-            const fullImage = new Image();
-            fullImage.onload = () => {
-                try {
-                    const canvas = document.createElement("canvas");
-                    const ctx = canvas.getContext("2d");
-                    if (!ctx) {
-                        reject(new Error("\uce94\ubc84\uc2a4 \ucee8\ud14d\uc2a4\ud2b8\ub97c \uc0dd\uc131\ud558\uc9c0 \ubabb\ud588\uc2b5\ub2c8\ub2e4."));
-                        return;
-                    }
-
-                    const dpr = window.devicePixelRatio || 1;
-                    const offsetX = Math.floor((rect.left + window.scrollX) * dpr);
-                    const offsetY = Math.floor((rect.top + window.scrollY) * dpr);
-
-                    canvas.width = Math.floor(rect.width * dpr);
-                    canvas.height = Math.floor(rect.height * dpr);
-
-                    ctx.drawImage(
-                        fullImage,
-                        offsetX,
-                        offsetY,
-                        canvas.width,
-                        canvas.height,
-                        0,
-                        0,
-                        canvas.width,
-                        canvas.height
-                    );
-
-                    canvas.toBlob((blob) => {
-                        if (!blob) {
-                            reject(new Error("\uc601\uc0c1 \ud504\ub808\uc784 \ub370\uc774\ud130\ub97c \uc0dd\uc131\ud558\uc9c0 \ubabb\ud588\uc2b5\ub2c8\ub2e4."));
-                            return;
-                        }
-                        resolve(blob);
-                    }, "image/jpeg", 0.9);
-                } catch (error) {
-                    reject(error);
-                }
-            };
-            fullImage.onerror = () => reject(new Error("\ucea1\ucc98\ud55c \ud0ed \uc774\ubbf8\uc9c0\ub97c \ubd88\ub7ec\uc624\uc9c0 \ubabb\ud588\uc2b5\ub2c8\ub2e4."));
-            fullImage.src = response.dataUrl;
-        });
+        try {
+            const canvas = document.createElement("canvas");
+            canvas.width = width;
+            canvas.height = height;
+            const ctx = canvas.getContext("2d");
+            if (!ctx) return reject(new Error("캔버스 컨텍스트를 생성하지 못했습니다."));
+            ctx.drawImage(video, 0, 0, width, height);
+            canvas.toBlob((blob) => {
+                if (!blob) return reject(new Error("영상 프레임 데이터를 생성하지 못했습니다."));
+                resolve(blob);
+            }, "image/jpeg", 0.9);
+        } catch (error) {
+            reject(new Error("비디오 프레임에 접근할 수 없습니다 (CORS 보안)."));
+        }
     });
 }
 
 async function captureImageBlob(url) {
-    if (!url) {
-        throw new Error("\uc774\ubbf8\uc9c0 \uc8fc\uc18c\uac00 \uc5c6\uc2b5\ub2c8\ub2e4.");
-    }
-
+    if (!url) throw new Error("이미지 주소가 없습니다.");
     return new Promise((resolve, reject) => {
-        const img = new Image();
-        img.crossOrigin = "anonymous";
-        img.referrerPolicy = "no-referrer";
-
-        img.onload = () => {
-            try {
-                const canvas = document.createElement("canvas");
-                const ctx = canvas.getContext("2d");
-                if (!ctx) {
-                    reject(new Error("\uce94\ubc84\uc2a4 \ucee8\ud14d\uc2a4\ud2b8\ub97c \uc0dd\uc131\ud558\uc9c0 \ubabb\ud588\uc2b5\ub2c8\ub2e4."));
-                    return;
-                }
-
-                canvas.width = img.naturalWidth || img.width;
-                canvas.height = img.naturalHeight || img.height;
-
-                if (canvas.width === 0 || canvas.height === 0) {
-                    reject(new Error("\uc774\ubbf8\uc9c0 \ud06c\uae30\uac00 0\uc785\ub2c8\ub2e4."));
-                    return;
-                }
-
-                ctx.drawImage(img, 0, 0);
-                canvas.toBlob((blob) => {
-                    if (!blob) {
-                        reject(new Error("\uc774\ubbf8\uc9c0 \ub370\uc774\ud130\ub97c \uc0dd\uc131\ud558\uc9c0 \ubabb\ud588\uc2b5\ub2c8\ub2e4."));
-                        return;
-                    }
-                    resolve(blob);
-                }, "image/jpeg", 0.9);
-            } catch (error) {
-                reject(error);
+        chrome.runtime.sendMessage({ action: "fetch_image", url: url }, (response) => {
+            if (chrome.runtime.lastError || !response || response.error) {
+                return reject(new Error("이미지를 불러오지 못했습니다 (보안 차단됨)."));
             }
-        };
-
-        img.onerror = () => reject(new Error("\uc774\ubbf8\uc9c0\ub97c \ubd88\ub7ec\uc624\uc9c0 \ubabb\ud588\uc2b5\ub2c8\ub2e4."));
-        img.src = url;
+            const img = new Image();
+            img.onload = () => {
+                try {
+                    const canvas = document.createElement("canvas");
+                    const ctx = canvas.getContext("2d");
+                    if (!ctx) return reject(new Error("캔버스 컨텍스트를 생성하지 못했습니다."));
+                    canvas.width = img.naturalWidth || img.width;
+                    canvas.height = img.naturalHeight || img.height;
+                    if (canvas.width === 0 || canvas.height === 0)
+                        return reject(new Error("이미지 크기가 0입니다."));
+                    ctx.drawImage(img, 0, 0);
+                    canvas.toBlob((blob) => {
+                        if (!blob) return reject(new Error("이미지 데이터를 생성하지 못했습니다."));
+                        resolve(blob);
+                    }, "image/jpeg", 0.9);
+                } catch (error) { reject(error); }
+            };
+            img.onerror = () => reject(new Error("가져온 이미지를 렌더링하지 못했습니다."));
+            img.src = response.dataUrl;
+        });
     });
-}
-
-function buildFaceSummary(faces) {
-    if (!faces.length) {
-        return "\n\n\uac10\uc9c0\ub41c \uc5bc\uad74\uc774 \uc5c6\uc2b5\ub2c8\ub2e4. \uc5bc\uad74\uc774 \ub354 \ud06c\uac70\ub098 \uc120\uba85\ud55c \uc774\ubbf8\uc9c0\ub97c \uc0ac\uc6a9\ud574\ubcf4\uc138\uc694.";
-    }
-
-    return "\n\n" + faces.slice(0, 3).map((face, index) => {
-        const bbox = face?.bbox || {};
-        const quality = face?.quality || {};
-        const detectionConfidence = (face?.detectionConfidence ?? face?.score ?? 0) * 100;
-        const qualityScore = (quality?.score ?? 0) * 100;
-
-        return [
-            `[\uc5bc\uad74 ${index + 1}]`,
-            `\uc704\uce58: (${bbox.x ?? "?"}, ${bbox.y ?? "?"}, ${bbox.w ?? "?"}x${bbox.h ?? "?"})`,
-            `\uc720\ud615: ${face?.faceMode || "\uc54c \uc218 \uc5c6\uc74c"}`,
-            `\uac80\ucd9c \uc2e0\ub8b0\ub3c4: ${detectionConfidence.toFixed(1)}%`,
-            `\ud488\uc9c8: ${quality?.label || "\uc54c \uc218 \uc5c6\uc74c"} (${qualityScore.toFixed(1)}%)`,
-        ].join("\n");
-    }).join("\n\n");
 }
 
 async function sendToBackend(blob, mediaType) {
@@ -287,44 +369,10 @@ async function sendToBackend(blob, mediaType) {
         body: formData,
     });
 
-    if (!response.ok) {
-        throw new Error(`\uc11c\ubc84 \uc751\ub2f5 \uc624\ub958: ${response.status} / ${await response.text()}`);
-    }
-
+    if (!response.ok) throw new Error(`서버 응답 오류: ${response.status}`);
     const data = await response.json();
     if (!data || data.status !== "DONE" || !data.result) {
-        throw new Error(data?.message || "\ubd84\uc11d\uc774 \uc815\uc0c1\uc801\uc73c\ub85c \uc644\ub8cc\ub418\uc9c0 \uc54a\uc558\uc2b5\ub2c8\ub2e4.");
+        throw new Error(data?.message || "분석이 정상적으로 완료되지 않았습니다.");
     }
-
-    const result = data.result;
-    const confidence = ((result.confidence || 0) * 100).toFixed(2);
-    const faces = Array.isArray(result.faces) ? result.faces : [];
-
-    alert(
-        `\uc694\uccad ID: ${data.requestId}\n` +
-        `\ud310\uc815 \uacb0\uacfc: ${result.isDeepfake ? "\ub515\ud398\uc774\ud06c \uc758\uc2ec" : "\uc815\uc0c1"}\n` +
-        `\uc2e0\ub8b0\ub3c4: ${confidence}%\n` +
-        `\uac10\uc9c0\ub41c \uc5bc\uad74 \uc218: ${result.faceCount}\n` +
-        `\uc6cc\ud130\ub9c8\ud06c \uac10\uc9c0: ${result.watermarkDetected ? "\uc608" : "\uc544\ub2c8\uc624"}\n` +
-        `\ubaa8\ub378 \ubc84\uc804: ${result.modelVersion}\n` +
-        `\ucc98\ub9ac \uc2dc\uac04: ${result.processingTimeMs}ms\n` +
-        `\ubd84\uc11d \uba54\uc2dc\uc9c0: ${result.message}` +
-        buildFaceSummary(faces)
-    );
+    return data;
 }
-
-const observer = new MutationObserver(() => {
-    scheduleAttachButtons();
-});
-
-if (document.body) {
-    observer.observe(document.body, {
-        childList: true,
-        subtree: true,
-    });
-}
-
-window.addEventListener("scroll", scheduleAttachButtons, { passive: true });
-window.addEventListener("resize", scheduleAttachButtons, { passive: true });
-
-scheduleAttachButtons();
